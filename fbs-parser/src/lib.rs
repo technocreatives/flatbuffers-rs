@@ -1,4 +1,7 @@
 mod lexer;
 
 #[doc(inline)]
-pub use lexer::{Attribute, Enum, FileExtension, FileIdentifier, Ident, Include, Namespace, Root, Struct, Table, Type, Union};
+pub use lexer::{
+    Attribute, Enum, Error, FileExtension, FileIdentifier, Ident, Include, Namespace, Root, Schema,
+    Struct, Table, Type, Union, parse
+};

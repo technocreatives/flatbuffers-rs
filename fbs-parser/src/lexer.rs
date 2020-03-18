@@ -6,22 +6,20 @@ peg::parser! {
         rule __() = [' ' | '\n']*
         rule _() = [' ']+
 
-        pub rule schema() -> Schema<'input>
-            = s:schemaT(<{ Schema::default() }>) { s }
-        rule schemaT(schema: Schema<'input>) -> Schema<'input>
-            = schema0(<{&mut schema}>)*
-        rule schema0(schema: &mut Schema<'input>)
-            = ([' ' | '\n'] / comment())* schema1(<{&mut schema}>) ([' ' | '\n'] / comment())*
-        rule schema1(schema: &mut Schema<'input>)
-            // = i:include() { SchemaType::Include(i) }
-            // / n:namespace() { SchemaType::Namespace(n) }
-            = t:table_or_struct() { schema.types.push(t); }
-            / e:enum() { schema.types.push(SchemaType::Enum(e)); }
-            / u:union() { schema.types.push(SchemaType::Union(u)); }
-            // / r:root() { SchemaType::Root(r) }
-            // / f:file_extension() { SchemaType::FileExtension(f) }
-            // / f:file_identifier() { SchemaType::FileIdentifier(f) }
-            // / a:attribute() { SchemaType::Attribute(a) }
+        pub rule schema() -> SchemaItems<'input>
+            = s:schema0()* { SchemaItems { items: s } }
+        rule schema0() -> SchemaItem<'input>
+            = ([' ' | '\n'] / comment())* s:schema1() ([' ' | '\n'] / comment())* { s }
+        rule schema1() -> SchemaItem<'input>
+            = i:include() { SchemaItem::Include(i) }
+            / n:namespace() { SchemaItem::Namespace(n) }
+            / t:table_or_struct() { t }
+            / e:enum() { SchemaItem::Enum(e) }
+            / u:union() { SchemaItem::Union(u) }
+            / r:root() { SchemaItem::Root(r) }
+            / f:file_extension() { SchemaItem::FileExtension(f) }
+            / f:file_identifier() { SchemaItem::FileIdentifier(f) }
+            / a:attribute() { SchemaItem::Attribute(a) }
             // / r:rpc()
         rule comment() -> &'input str
             = "//" s:$((!['\n'][_])*) "\n" { s.trim() }
@@ -35,16 +33,16 @@ peg::parser! {
         rule semi_eol()
             = ";" (__ comment() __)*
 
-        rule table_or_struct() -> SchemaType<'input>
+        rule table_or_struct() -> SchemaItem<'input>
             = x:$("table" / "struct") _ i:ident() " "* m:metadata()? " "* "{" __ f:field()* __ "}" {
                 if x == "table" {
-                    SchemaType::Table(Table {
+                    SchemaItem::Table(Table {
                         name: i,
                         metadata: m,
                         fields: f,
                     })
                 } else {
-                    SchemaType::Struct(Struct {
+                    SchemaItem::Struct(Struct {
                         name: i,
                         metadata: m,
                         fields: f,
@@ -286,11 +284,10 @@ pub enum Type<'a> {
     Ident(Ident<'a>),
 }
 
-// #[derive(Debug, Clone)]
-// pub struct Schema<'a> {
-//     pub(crate) items: Vec<SchemaType<'a>>,
-// }
-
+#[derive(Debug, Clone)]
+pub struct SchemaItems<'a> {
+    pub(crate) items: Vec<SchemaItem<'a>>,
+}
 
 #[derive(Debug, Clone)]
 pub enum SchemaType<'a> {
@@ -315,6 +312,9 @@ use std::convert::TryFrom;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Error parsing input")]
+    FailedParsing(#[from] peg::error::ParseError<peg::str::LineCol>),
+
     #[error("Duplicate namespace")]
     DuplicateNamespace,
 
@@ -328,70 +328,79 @@ pub enum Error {
     DuplicateFileExtension,
 }
 
-// impl<'a> TryFrom<lexer::Schema<'a>> for Schema<'a> {
-//     type Error = Error;
+impl<'a> TryFrom<SchemaItems<'a>> for Schema<'a> {
+    type Error = Error;
 
-//     fn try_from(other: lexer::Schema<'a>) -> Result<Self, Self::Error> {
-//         let mut schema = Schema::default();
-        
-//         for item in other.items.into_iter() {
-//             use lexer::SchemaType;
+    fn try_from(other: SchemaItems<'a>) -> Result<Self, Self::Error> {
+        let mut schema = Schema::default();
 
-//             match item {
-//                 SchemaType::Include(include) => { schema.includes.push(include); },
-//                 SchemaType::Namespace(ns) => {
-//                     if !schema.namespace.is_some() {
-//                         return Err(Error::DuplicateNamespace);
-//                     }
-//                     schema.namespace = Some(ns);
-//                 },
-//                 SchemaType::Table(table) => { schema.types.push(SchemaType::Table(table)); },
-//                 SchemaType::Struct(struct_) => { schema.types.push(SchemaType::Struct(struct_)); }
-//                 SchemaType::Root(root) => {
-//                     if schema.root_type.is_some() {
-//                         return Err(Error::DuplicateRootType);
-//                     }
+        for item in other.items.into_iter() {
+            match item {
+                SchemaItem::Include(include) => {
+                    schema.includes.push(include);
+                }
+                SchemaItem::Namespace(ns) => {
+                    if schema.namespace.is_some() {
+                        return Err(Error::DuplicateNamespace);
+                    }
+                    schema.namespace = Some(ns);
+                }
+                SchemaItem::Table(table) => {
+                    schema.types.push(SchemaType::Table(table));
+                }
+                SchemaItem::Struct(struct_) => {
+                    schema.types.push(SchemaType::Struct(struct_));
+                }
+                SchemaItem::Root(root) => {
+                    if schema.root_type.is_some() {
+                        return Err(Error::DuplicateRootType);
+                    }
 
-//                     schema.root_type = Some(root);
-//                 }
-//                 SchemaType::Union(union_) => { schema.types.push(SchemaType::Union(union_)); }
-//                 SchemaType::Enum(enum_) => { schema.types.push(SchemaType::Enum(enum_)); }
-//                 SchemaType::Attribute(attr) => { schema.attributes.push(attr); }
-//                 SchemaType::FileExtension(ext) => {
-//                     if schema.file_extension.is_some() {
-//                         return Err(Error::DuplicateFileExtension);
-//                     }
+                    schema.root_type = Some(root);
+                }
+                SchemaItem::Union(union_) => {
+                    schema.types.push(SchemaType::Union(union_));
+                }
+                SchemaItem::Enum(enum_) => {
+                    schema.types.push(SchemaType::Enum(enum_));
+                }
+                SchemaItem::Attribute(attr) => {
+                    schema.attributes.push(attr);
+                }
+                SchemaItem::FileExtension(ext) => {
+                    if schema.file_extension.is_some() {
+                        return Err(Error::DuplicateFileExtension);
+                    }
 
-//                     schema.file_extension = Some(ext);
-//                 }
-//                 SchemaType::FileIdentifier(id) => {
-//                     if schema.file_identifier.is_some() {
-//                         return Err(Error::DuplicateFileIdentifier);
-//                     }
+                    schema.file_extension = Some(ext);
+                }
+                SchemaItem::FileIdentifier(id) => {
+                    if schema.file_identifier.is_some() {
+                        return Err(Error::DuplicateFileIdentifier);
+                    }
 
-//                     schema.file_identifier = Some(id);
-//                 }
-//             }
-//         }
+                    schema.file_identifier = Some(id);
+                }
+            }
+        }
 
-//         Ok(schema)
-//     }
-// }
+        Ok(schema)
+    }
+}
 
-
-// #[derive(Debug, Clone)]
-// pub enum SchemaType<'a> {
-//     Include(Include<'a>),
-//     Namespace(Namespace<'a>),
-//     Table(Table<'a>),
-//     Struct(Struct<'a>),
-//     Root(Root<'a>),
-//     Union(Union<'a>),
-//     Enum(Enum<'a>),
-//     Attribute(Attribute<'a>),
-//     FileExtension(FileExtension<'a>),
-//     FileIdentifier(FileIdentifier<'a>),
-// }
+#[derive(Debug, Clone)]
+pub enum SchemaItem<'a> {
+    Include(Include<'a>),
+    Namespace(Namespace<'a>),
+    Table(Table<'a>),
+    Struct(Struct<'a>),
+    Root(Root<'a>),
+    Union(Union<'a>),
+    Enum(Enum<'a>),
+    Attribute(Attribute<'a>),
+    FileExtension(FileExtension<'a>),
+    FileIdentifier(FileIdentifier<'a>),
+}
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Ident<'a>(&'a str);
@@ -451,8 +460,9 @@ mod tests {
 
     #[test]
     fn smoke() {
-        let x = fbs_parser::schema(
+        let x = parse(
             r#"
+include "ghostman.fbs";
 namespace Pahkat;
 
 union Package {
@@ -501,8 +511,8 @@ root_type Packages;
 
     #[test]
     fn smoke2() {
-        let x = fbs_parser::schema(
-r#"table PointPosition { x:uint; y:uint; }
+        let x = parse(
+            r#"table PointPosition { x:uint; y:uint; }
 table MarkerPosition {}
 union Position {
 Start  :  MarkerPosition  ,
@@ -514,4 +524,9 @@ Angery: bool,
 
         println!("{:#?}", x.unwrap());
     }
+}
+
+pub fn parse<'a>(s: &'a str) -> Result<Schema<'a>, Error> {
+    let out = fbs_parser::schema(s)?;
+    Schema::try_from(out)
 }
