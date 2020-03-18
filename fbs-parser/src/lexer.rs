@@ -6,11 +6,11 @@ peg::parser! {
         rule __() = [' ' | '\n']*
         rule _() = [' ']+
 
-        pub rule schema() -> SchemaItems<'input>
+        pub rule schema() -> SchemaItems
             = s:schema0()* { SchemaItems { items: s } }
-        rule schema0() -> SchemaItem<'input>
+        rule schema0() -> SchemaItem
             = ([' ' | '\n'] / comment())* s:schema1() ([' ' | '\n'] / comment())* { s }
-        rule schema1() -> SchemaItem<'input>
+        rule schema1() -> SchemaItem
             = i:include() { SchemaItem::Include(i) }
             / n:namespace() { SchemaItem::Namespace(n) }
             / t:table_or_struct() { t }
@@ -21,19 +21,19 @@ peg::parser! {
             / f:file_identifier() { SchemaItem::FileIdentifier(f) }
             / a:attribute() { SchemaItem::Attribute(a) }
             // / r:rpc()
-        rule comment() -> &'input str
-            = "//" s:$((!['\n'][_])*) "\n" { s.trim() }
-        rule attribute() -> Attribute<'input>
+        rule comment() -> String
+            = "//" s:$((!['\n'][_])*) "\n" { s.trim().to_string() }
+        rule attribute() -> Attribute
             = "attribute" _ s:string_literal() __ semi_eol() { Attribute(s) }
-        rule file_extension() -> FileExtension<'input>
+        rule file_extension() -> FileExtension
             = "file_extension" _ s:string_literal() __ semi_eol() { FileExtension(s) }
-        rule file_identifier() -> FileIdentifier<'input>
+        rule file_identifier() -> FileIdentifier
             = "file_identifier" _ s:string_literal() __ semi_eol() { FileIdentifier(s) }
 
         rule semi_eol()
             = ";" (__ comment() __)*
 
-        rule table_or_struct() -> SchemaItem<'input>
+        rule table_or_struct() -> SchemaItem
             = x:$("table" / "struct") _ i:ident() " "* m:metadata()? " "* "{" __ f:field()* __ "}" {
                 if x == "table" {
                     SchemaItem::Table(Table {
@@ -50,7 +50,7 @@ peg::parser! {
                 }
             }
 
-        rule type_ident() -> Type<'input>
+        rule type_ident() -> Type
             = "bool" { Type::Bool }
             / "byte" { Type::Byte }
             / "ubyte" { Type::Ubyte }
@@ -76,11 +76,11 @@ peg::parser! {
             / "[" i:type_ident() "]" { Type::Vector(Box::new(i)) }
             / i:ident() { Type::Ident(i) }
 
-        rule enum_value() -> EnumValue<'input>
+        rule enum_value() -> EnumValue
             = i:ident() [' ']* "=" [' ']* v:integer() { EnumValue { name: i, value: Some(v) } }
             / i:ident() { EnumValue { name: i, value: None } }
 
-        rule enum() -> Enum<'input>
+        rule enum() -> Enum
             = "enum" _ i:ident() [' ']* ":" [' ']* t:type_ident() " "* m:metadata()? "{" __ v:enum_value() ** (__ "," __) __ ","? __ "}" {
                 Enum {
                     name: i,
@@ -89,11 +89,11 @@ peg::parser! {
                     values: v
                 }
             }
-        rule union_value() -> UnionValue<'input>
+        rule union_value() -> UnionValue
             = i:ident() [' ']* ":" [' ']* t:type_ident() { UnionValue { ty: t, name: Some(i) } }
             / t:type_ident() { UnionValue { ty: t, name: None } }
 
-        rule union() -> Union<'input>
+        rule union() -> Union
             = "union" _ i:ident() " "* m:metadata()? "{" __ v:union_value() ** (__ "," __) __ ","? __ "}" {
                 Union {
                     name: i,
@@ -108,36 +108,36 @@ peg::parser! {
         rule xdigit()
             = ['0'..='9' | 'a'..='f' | 'A'..='F']
 
-        rule ident() -> Ident<'input>
-            = v:$(['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { Ident(v) }
+        rule ident() -> Ident
+            = v:$(['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { Ident(v.to_string()) }
 
-        rule integer() -> Integer<'input>
-            = x:$(['-' | '+']? digit()+) { Integer::Decimal(x) }
-            / x:$(['-' | '+']?"0"['x' | 'X'] xdigit()+) { Integer::Hex(x) }
+        rule integer() -> Integer
+            = x:$(['-' | '+']? digit()+) { Integer::Decimal(x.to_string()) }
+            / x:$(['-' | '+']?"0"['x' | 'X'] xdigit()+) { Integer::Hex(x.to_string()) }
 
-        rule float() -> Float<'input>
-            = x:$(['-' | '+']? ("." digit()+ / digit()+ "." digit()* / digit()+) (['e'|'E']['-' | '+']? digit()+)?) { Float::Decimal(x) }
-            / x:$(['-' | '+']? "0"['x'|'X'] ("." xdigit()+ / xdigit()+ "." xdigit()* / xdigit()+) (['p'|'P']['-' | '+']? digit()+)?) { Float::Hex(x) }
-            / x:$(['-' | '+']? ("nan" / "inf" / "infinity")) { Float::Special(x)}
+        rule float() -> Float
+            = x:$(['-' | '+']? ("." digit()+ / digit()+ "." digit()* / digit()+) (['e'|'E']['-' | '+']? digit()+)?) { Float::Decimal(x.to_string()) }
+            / x:$(['-' | '+']? "0"['x'|'X'] ("." xdigit()+ / xdigit()+ "." xdigit()* / xdigit()+) (['p'|'P']['-' | '+']? digit()+)?) { Float::Hex(x.to_string()) }
+            / x:$(['-' | '+']? ("nan" / "inf" / "infinity")) { Float::Special(x.to_string()) }
         rule bool() -> bool
             = "true" { true }
             / "false" { false }
 
-        rule scalar() -> Scalar<'input>
+        rule scalar() -> Scalar
             = i:integer() { Scalar::Integer(i) }
             / f:float() { Scalar::Float(f) }
 
-        rule literal() -> Literal<'input>
+        rule literal() -> Literal
             = s:scalar() { Literal::Scalar(s) }
             / s:string_literal() { Literal::String(s) }
             / b:bool() { Literal::Bool(b) }
             / i:ident() { Literal::Ident(i) }
 
-        rule single_value() -> SingleValue<'input>
+        rule single_value() -> SingleValue
             = s:scalar() { SingleValue::Scalar(s) }
             / s:string_literal() { SingleValue::String(s) }
 
-        rule metadata() -> Metadata<'input>
+        rule metadata() -> Metadata
             = "(" __ o:metadata0() ** (__ "," __) __ ")" {
                 let mut m = IndexMap::new();
                 for (k, v) in o {
@@ -145,14 +145,14 @@ peg::parser! {
                 }
                 Metadata(m)
             }
-        rule metadata0() -> (Ident<'input>, Option<SingleValue<'input>>)
+        rule metadata0() -> (Ident, Option<SingleValue>)
             = i:ident() s:metadata1()? {
                 (i, s)
             }
-        rule metadata1() -> SingleValue<'input>
+        rule metadata1() -> SingleValue
             = [' ']* ":" [' ']* s:single_value() { s }
 
-        rule field() -> Field<'input>
+        rule field() -> Field
             = i:ident() [' ']* ":" [' ']* t:type_ident() l:field0()? m:field1()? semi_eol() __ {
                 Field {
                     name: i,
@@ -161,27 +161,27 @@ peg::parser! {
                     metadata: m,
                 }
             }
-        rule field0() -> Literal<'input>
+        rule field0() -> Literal
             = _ "=" _ l:literal() { l }
-        rule field1() -> Metadata<'input>
+        rule field1() -> Metadata
             = _ m:metadata() { m }
 
-        rule string_literal() -> &'input str
-            = "\"" s:$((!['"'][_])*) "\"" { s }
+        rule string_literal() -> String
+            = "\"" s:$((!['"'][_])*) "\"" { s.to_string() }
 
-        rule include() -> Include<'input>
+        rule include() -> Include
             = "include" _ path:string_literal() __ semi_eol() { Include { path } }
 
-        rule namespace() -> Namespace<'input>
+        rule namespace() -> Namespace
             = "namespace" _ i:ident() ** "." __ semi_eol() { Namespace(i) }
 
-        rule root() -> Root<'input>
+        rule root() -> Root
             = "root_type" _ i:ident() __ semi_eol() { Root(i) }
 
-        rule value() -> Value<'input>
+        rule value() -> Value
             = s:string_literal() { Value::Single(SingleValue::String(s)) }
 
-        rule object() -> IndexMap<Ident<'input>, Value<'input>>
+        rule object() -> IndexMap<Ident, Value>
             = "{" __ o:object0() ** (__ "," __) __ ","? __ "}" {
                 let mut m = IndexMap::new();
                 for (k, v) in o {
@@ -189,75 +189,75 @@ peg::parser! {
                 }
                 m
             }
-        rule object0() -> (Ident<'input>, Value<'input>)
+        rule object0() -> (Ident, Value)
             = i:ident() [' ']* ":" [' ']* v:value() { (i, v) }
 
     }
 }
 
 #[derive(Debug, Clone)]
-pub struct Attribute<'a>(&'a str);
+pub struct Attribute(String);
 
 #[derive(Debug, Clone)]
-pub struct FileExtension<'a>(&'a str);
+pub struct FileExtension(String);
 
 #[derive(Debug, Clone)]
-pub struct FileIdentifier<'a>(&'a str);
+pub struct FileIdentifier(String);
 
 #[derive(Debug, Clone)]
-pub struct Enum<'a> {
-    name: Ident<'a>,
-    ty: Type<'a>,
-    metadata: Option<Metadata<'a>>,
-    values: Vec<EnumValue<'a>>,
+pub struct Enum {
+    name: Ident,
+    ty: Type,
+    metadata: Option<Metadata>,
+    values: Vec<EnumValue>,
 }
 
 #[derive(Debug, Clone)]
-pub struct EnumValue<'a> {
-    name: Ident<'a>,
-    value: Option<Integer<'a>>,
+pub struct EnumValue {
+    name: Ident,
+    value: Option<Integer>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Union<'a> {
-    name: Ident<'a>,
-    metadata: Option<Metadata<'a>>,
-    values: Vec<UnionValue<'a>>,
+pub struct Union {
+    name: Ident,
+    metadata: Option<Metadata>,
+    values: Vec<UnionValue>,
 }
 
 #[derive(Debug, Clone)]
-pub struct UnionValue<'a> {
-    name: Option<Ident<'a>>,
-    ty: Type<'a>,
+pub struct UnionValue {
+    name: Option<Ident>,
+    ty: Type,
 }
 
 #[derive(Debug, Clone)]
-pub struct Field<'a> {
-    name: Ident<'a>,
-    ty: Type<'a>,
-    default_value: Option<Literal<'a>>,
-    metadata: Option<Metadata<'a>>,
+pub struct Field {
+    name: Ident,
+    ty: Type,
+    default_value: Option<Literal>,
+    metadata: Option<Metadata>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Metadata<'a>(IndexMap<Ident<'a>, Option<SingleValue<'a>>>);
+pub struct Metadata(IndexMap<Ident, Option<SingleValue>>);
 
 #[derive(Debug, Clone)]
-pub struct Struct<'a> {
-    name: Ident<'a>,
-    metadata: Option<Metadata<'a>>,
-    fields: Vec<Field<'a>>,
+pub struct Struct {
+    name: Ident,
+    metadata: Option<Metadata>,
+    fields: Vec<Field>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Table<'a> {
-    name: Ident<'a>,
-    metadata: Option<Metadata<'a>>,
-    fields: Vec<Field<'a>>,
+pub struct Table {
+    name: Ident,
+    metadata: Option<Metadata>,
+    fields: Vec<Field>,
 }
 
 #[derive(Debug, Clone)]
-pub enum Type<'a> {
+pub enum Type {
     Bool,
     Byte,
     Ubyte,
@@ -280,32 +280,32 @@ pub enum Type<'a> {
     Float32,
     Float64,
     String,
-    Vector(Box<Type<'a>>),
-    Ident(Ident<'a>),
+    Vector(Box<Type>),
+    Ident(Ident),
 }
 
 #[derive(Debug, Clone)]
-pub struct SchemaItems<'a> {
-    pub(crate) items: Vec<SchemaItem<'a>>,
+pub struct SchemaItems {
+    pub(crate) items: Vec<SchemaItem>,
 }
 
 #[derive(Debug, Clone)]
-pub enum SchemaType<'a> {
-    Table(Table<'a>),
-    Struct(Struct<'a>),
-    Union(Union<'a>),
-    Enum(Enum<'a>),
+pub enum SchemaType {
+    Table(Table),
+    Struct(Struct),
+    Union(Union),
+    Enum(Enum),
 }
 
 #[derive(Debug, Clone, Default)]
-pub struct Schema<'a> {
-    includes: Vec<Include<'a>>,
-    namespace: Option<Namespace<'a>>,
-    attributes: Vec<Attribute<'a>>,
-    types: Vec<SchemaType<'a>>,
-    root_type: Option<Root<'a>>,
-    file_identifier: Option<FileIdentifier<'a>>,
-    file_extension: Option<FileExtension<'a>>,
+pub struct Schema {
+    includes: Vec<Include>,
+    namespace: Option<Namespace>,
+    attributes: Vec<Attribute>,
+    types: Vec<SchemaType>,
+    root_type: Option<Root>,
+    file_identifier: Option<FileIdentifier>,
+    file_extension: Option<FileExtension>,
 }
 
 use std::convert::TryFrom;
@@ -328,10 +328,10 @@ pub enum Error {
     DuplicateFileExtension,
 }
 
-impl<'a> TryFrom<SchemaItems<'a>> for Schema<'a> {
+impl TryFrom<SchemaItems> for Schema {
     type Error = Error;
 
-    fn try_from(other: SchemaItems<'a>) -> Result<Self, Self::Error> {
+    fn try_from(other: SchemaItems) -> Result<Self, Self::Error> {
         let mut schema = Schema::default();
 
         for item in other.items.into_iter() {
@@ -389,69 +389,69 @@ impl<'a> TryFrom<SchemaItems<'a>> for Schema<'a> {
 }
 
 #[derive(Debug, Clone)]
-pub enum SchemaItem<'a> {
-    Include(Include<'a>),
-    Namespace(Namespace<'a>),
-    Table(Table<'a>),
-    Struct(Struct<'a>),
-    Root(Root<'a>),
-    Union(Union<'a>),
-    Enum(Enum<'a>),
-    Attribute(Attribute<'a>),
-    FileExtension(FileExtension<'a>),
-    FileIdentifier(FileIdentifier<'a>),
+pub enum SchemaItem {
+    Include(Include),
+    Namespace(Namespace),
+    Table(Table),
+    Struct(Struct),
+    Root(Root),
+    Union(Union),
+    Enum(Enum),
+    Attribute(Attribute),
+    FileExtension(FileExtension),
+    FileIdentifier(FileIdentifier),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Ident<'a>(&'a str);
+pub struct Ident(String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Value<'a> {
-    Single(SingleValue<'a>),
+pub enum Value {
+    Single(SingleValue),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum SingleValue<'a> {
-    String(&'a str),
-    Scalar(Scalar<'a>),
+pub enum SingleValue {
+    String(String),
+    Scalar(Scalar),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Literal<'a> {
-    Scalar(Scalar<'a>),
-    String(&'a str),
+pub enum Literal {
+    Scalar(Scalar),
+    String(String),
     Bool(bool),
-    Ident(Ident<'a>),
+    Ident(Ident),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Scalar<'a> {
-    Integer(Integer<'a>),
-    Float(Float<'a>),
+pub enum Scalar {
+    Integer(Integer),
+    Float(Float),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Integer<'a> {
-    Decimal(&'a str),
-    Hex(&'a str),
+pub enum Integer {
+    Decimal(String),
+    Hex(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Float<'a> {
-    Decimal(&'a str),
-    Hex(&'a str),
-    Special(&'a str),
+pub enum Float {
+    Decimal(String),
+    Hex(String),
+    Special(String),
 }
 
 #[derive(Debug, Clone)]
-pub struct Root<'a>(Ident<'a>);
+pub struct Root(Ident);
 
 #[derive(Debug, Clone)]
-pub struct Namespace<'a>(Vec<Ident<'a>>);
+pub struct Namespace(Vec<Ident>);
 
 #[derive(Debug, Clone)]
-pub struct Include<'a> {
-    path: &'a str,
+pub struct Include {
+    path: String,
 }
 
 #[cfg(test)]
@@ -526,7 +526,7 @@ Angery: bool,
     }
 }
 
-pub fn parse<'a>(s: &'a str) -> Result<Schema<'a>, Error> {
+pub fn parse(s: &str) -> Result<Schema, Error> {
     let out = fbs_parser::schema(s)?;
     Schema::try_from(out)
 }
