@@ -303,7 +303,7 @@ impl<'a> Table<'a> {
     }
 
     #[inline(always)]
-    fn offset(&self, offset: voffset) -> Option<ioffset> {
+    fn offset(&self, offset: uoffset) -> Option<ioffset> {
         assert!(offset != 0);
 
         let offset = offset as usize;
@@ -319,38 +319,56 @@ impl<'a> Table<'a> {
         }
     }
 
+    fn vector(&self, offset: uoffset, ty: &'a fbs_parser::Type) -> Option<Vector<'a>> {
+        let offset = match self.offset(offset) {
+            Some(v) => v,
+            None => return None,
+        };
+        let offset = (self.offset as ioffset - offset) as usize;
+        let size_end = offset + std::mem::size_of::<uoffset>();
+        let len = u32::from_le_bytes(self.data[offset..size_end].try_into().unwrap()) as usize;
+        let slice = &self.data[size_end..size_end + len];
+        Some(Vector::new(slice, ty))
+    }
+
     pub fn get(&self, ident: &fbs_parser::Ident) -> Result<Option<Value>, ValueError> {
         let (id, schema_field) = self
             .schema
             .id(ident)
             .ok_or_else(|| ValueError::KeyNotFound(ident.clone()))?;
         let table_field_offset = match self.vtable.table_offset(id) {
-            Some(v) => v,
+            Some(v) => v as uoffset,
             None => return Ok(None),
         };
 
         use fbs_parser::Type;
 
         let v = match &schema_field.ty {
-            Type::Vector(ty) => {
-                // Check if type is a union, because it is, we're gonna have a bad time.
-                if ty.is_union() {
-                    // HAHAHHA
-                    todo!()
-                }
+            Type::Vector(ty) if ty.is_union() => {
+                let union_ty = ty.as_union().unwrap();
 
-                let offset = match self.offset(table_field_offset) {
-                    Some(v) => v,
-                    None => return Ok(Some(Value::Vector(None))),
+                let union_tag_offset = match self.vtable.table_offset(id - 1) {
+                    Some(v) => (self.offset as ioffset - v as ioffset) as uoffset,
+                    None => return Ok(None),
                 };
-                let offset = ((self.offset as ioffset) - offset) as usize;
-                let size_end = offset + std::mem::size_of::<uoffset>();
-                let len =
-                    u32::from_le_bytes(self.data[offset..size_end].try_into().unwrap()) as usize;
-                let slice = &self.data[size_end..size_end + len];
 
-                Value::Vector(Some(Vector::new(slice, ty)))
+                let union_tag_vector = self.vector(
+                    union_tag_offset,
+                    &fbs_parser::Type::Primitive(fbs_parser::Primitive::Uint8),
+                );
+
+                let union_value_vector = self.vector(table_field_offset, &ty);
+
+                let value = match (union_tag_vector, union_value_vector) {
+                    (Some(tags), Some(values)) => {
+                        Some(UnionVector::new(self.data, union_ty, tags, values))
+                    }
+                    _ => None,
+                };
+
+                Value::UnionVector(value)
             }
+            Type::Vector(ty) => Value::Vector(self.vector(table_field_offset, &ty)),
             Type::String => {
                 let offset = match self.offset(table_field_offset) {
                     Some(v) => v,
@@ -388,7 +406,7 @@ impl<'a> Table<'a> {
                 SchemaType::Enum(ty) => enum_value(self.buf, ty, table_field_offset as uoffset)?,
                 SchemaType::Union(ty) => {
                     let union_tag_offset = match self.vtable.table_offset(id - 1) {
-                        Some(v) => self.offset + v as uoffset,
+                        Some(v) => (self.offset as ioffset - v as ioffset) as uoffset,
                         None => return Ok(None),
                     };
 
@@ -405,16 +423,17 @@ impl<'a> Table<'a> {
                             SchemaType::Table(ty) => {
                                 let table = match self.offset(table_field_offset) {
                                     Some(relative_offset) => {
-                                        let offset = (self.offset as ioffset + relative_offset) as uoffset;
+                                        let offset =
+                                            (self.offset as ioffset - relative_offset) as uoffset;
                                         Some(Table::new(offset, ty, self.data)?)
                                     }
                                     None => None,
                                 };
                                 Value::Table(table)
-                            },
-                            _ => todo!()
+                            }
+                            _ => todo!(),
                         },
-                        _ => todo!()
+                        _ => todo!(),
                     };
 
                     Value::Union(ty, union_value, Box::new(value))
@@ -439,6 +458,30 @@ impl<'a> Vector<'a> {
 }
 
 #[derive(Debug)]
+pub struct UnionVector<'a> {
+    data: &'a [u8],
+    ty: &'a fbs_parser::Union,
+    tags: Vector<'a>,
+    values: Vector<'a>,
+}
+
+impl<'a> UnionVector<'a> {
+    pub fn new(
+        data: &'a [u8],
+        ty: &'a fbs_parser::Union,
+        tags: Vector<'a>,
+        values: Vector<'a>,
+    ) -> UnionVector<'a> {
+        UnionVector {
+            data,
+            ty,
+            tags,
+            values,
+        }
+    }
+}
+
+#[derive(Debug)]
 pub enum Value<'a> {
     Table(Option<Table<'a>>),
     Struct(Option<Struct<'a>>),
@@ -449,7 +492,7 @@ pub enum Value<'a> {
         Box<Value<'a>>,
     ),
     Vector(Option<Vector<'a>>),
-    // UnionVector(Option<UnionVector<'a>>),
+    UnionVector(Option<UnionVector<'a>>),
     String(Option<&'a str>),
     Bool(bool),
     F32(f32),

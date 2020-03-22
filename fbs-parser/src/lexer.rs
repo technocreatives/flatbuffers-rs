@@ -407,13 +407,18 @@ impl Type {
 
     #[inline(always)]
     pub fn is_union(&self) -> bool {
+        self.as_union().is_some()
+    }
+
+    #[inline(always)]
+    pub fn as_union(&self) -> Option<&Union> {
         if let Type::SchemaType(ty) = self {
-            match **ty {
-                SchemaType::Union(_) => true,
-                _ => false,
+            match &**ty {
+                SchemaType::Union(v) => Some(v),
+                _ => None,
             }
         } else {
-            false
+            None
         }
     }
 }
