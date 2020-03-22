@@ -1,24 +1,36 @@
 use indexmap::IndexMap;
+use std::convert::{TryFrom, TryInto};
+
+#[derive(Debug, Default)]
+pub(crate) struct Env {
+    pub known_types: IndexMap<Ident, SchemaType>,
+    pub last_enum_value: isize,
+}
 
 peg::parser! {
-    grammar fbs_parser() for str {
+    pub(crate) grammar fbs_parser(env: &mut Env) for str {
         rule ___() = ([' '] / nl())+
         rule __() = ([' '] / nl())*
         rule _() = [' ']+
 
         rule nl() = ("\r\n" / "\n")
 
-        pub rule schema() -> SchemaItems
+        pub(crate) rule schema() -> SchemaItems
             = s:schema0()* { SchemaItems { items: s } }
         rule schema0() -> SchemaItem
-            = (([' '] / nl()) / comment())* s:schema1() (([' '] / nl()) / comment())* { s }
+            = (([' '] / nl()) / comment())* s:schema1() (([' '] / nl()) / comment())* {
+                if let SchemaItem::SchemaType(ref ty) = &s {
+                    env.known_types.insert(ty.name().clone(), ty.clone());
+                }
+                s
+            }
         rule schema1() -> SchemaItem
             = i:include() { SchemaItem::Include(i) }
             / n:namespace() { SchemaItem::Namespace(n) }
             / t:table_or_struct() { t }
-            / e:enum() { SchemaItem::Enum(e) }
-            / u:union() { SchemaItem::Union(u) }
-            / r:root() { SchemaItem::Root(r) }
+            / e:enum() { SchemaItem::SchemaType(SchemaType::Enum(e)) }
+            / u:union() { SchemaItem::SchemaType(SchemaType::Union(u)) }
+            / r:root() { SchemaItem::RootType(r) }
             / f:file_extension() { SchemaItem::FileExtension(f) }
             / f:file_identifier() { SchemaItem::FileIdentifier(f) }
             / a:attribute() { SchemaItem::Attribute(a) }
@@ -30,7 +42,7 @@ peg::parser! {
         rule file_extension() -> FileExtension
             = "file_extension" _ s:string_literal() __ semi_eol() { FileExtension(s) }
         rule file_identifier() -> FileIdentifier
-            = "file_identifier" _ s:string_literal() __ semi_eol() { FileIdentifier(s) }
+            = "file_identifier" _ s:string_literal() __ semi_eol() {? FileIdentifier::try_from(&*s) }
 
         rule semi_eol()
             = ";" (__ comment() __)*
@@ -38,57 +50,73 @@ peg::parser! {
         rule table_or_struct() -> SchemaItem
             = x:$("table" / "struct") _ i:ident() " "* m:metadata()? " "* "{" __ f:field()* __ "}" {
                 if x == "table" {
-                    SchemaItem::Table(Table {
+                    SchemaItem::SchemaType(SchemaType::Table(Table {
                         name: i,
                         metadata: m,
                         fields: f,
-                    })
+                    }))
                 } else {
-                    SchemaItem::Struct(Struct {
+                    SchemaItem::SchemaType(SchemaType::Struct(Struct {
                         name: i,
                         metadata: m,
                         fields: f,
-                    })
+                    }))
+                }
+            }
+
+        rule type_ident0() -> Type
+            = i:ident() {?
+                match env.known_types.get(&i) {
+                    Some(v) => Ok(Type::SchemaType(Box::new((*v).to_owned()))),
+                    None => Err("invalid known type"),
                 }
             }
 
         rule type_ident() -> Type
-            = "bool" { Type::Bool }
-            / "byte" { Type::Byte }
-            / "ubyte" { Type::Ubyte }
-            / "short" { Type::Short }
-            / "ushort" { Type::Ushort }
-            / "int" { Type::Int }
-            / "uint" { Type::Uint }
-            / "float" { Type::Float }
-            / "long" { Type::Long }
-            / "ulong" { Type::Ulong }
-            / "double" { Type::Double }
-            / "int8" { Type::Int8 }
-            / "uint8" { Type::Uint8 }
-            / "int16" { Type::Int16 }
-            / "uint16" { Type::Uint16 }
-            / "int32" { Type::Int32 }
-            / "uint32" { Type::Uint32 }
-            / "int64" { Type::Int64 }
-            / "uint64" { Type::Uint64 }
-            / "float32" { Type::Float32 }
-            / "float64" { Type::Float64 }
+            = "bool" { Type::Primitive(Primitive::Bool) }
+            / ("byte" / "int8") { Type::Primitive(Primitive::Int8) }
+            / ("ubyte" / "uint8") { Type::Primitive(Primitive::Uint8) }
+            / ("short" / "int16") { Type::Primitive(Primitive::Int16) }
+            / ("ushort" / "uint16") { Type::Primitive(Primitive::Uint16) }
+            / ("int" / "int32") { Type::Primitive(Primitive::Int32) }
+            / ("uint" / "uint32") { Type::Primitive(Primitive::Uint32) }
+            / ("long" / "int64") { Type::Primitive(Primitive::Int64) }
+            / ("ulong"/ "uint64") { Type::Primitive(Primitive::Uint64) }
+            / ("float" / "float32") { Type::Primitive(Primitive::Float32) }
+            / ("double" / "float64") { Type::Primitive(Primitive::Float64) }
             / "string" { Type::String }
             / "[" i:type_ident() "]" { Type::Vector(Box::new(i)) }
-            / i:ident() { Type::Ident(i) }
+            / i:type_ident0() { i }
 
         rule enum_value() -> EnumValue
-            = i:ident() [' ']* "=" [' ']* v:integer() { EnumValue { name: i, value: Some(v) } }
-            / i:ident() { EnumValue { name: i, value: None } }
+            = i:ident() [' ']* "=" [' ']* v:integer() {
+                env.last_enum_value = v;
+                EnumValue { name: i, value: v }
+            }
+            / i:ident() {?
+                match env.last_enum_value.checked_add(1) {
+                    Some(v) => {
+                        env.last_enum_value = v;
+                        Ok(EnumValue { name: i, value: v })
+                    },
+                    None => {
+                        Err("hit isize limit for enum variants")
+                    }
+                }
+            }
 
         rule enum() -> Enum
-            = "enum" _ i:ident() [' ']* ":" [' ']* t:type_ident() " "* m:metadata()? "{" __ v:enum_value() ** (__ "," __) __ ","? __ "}" {
-                Enum {
-                    name: i,
-                    ty: t,
-                    metadata: m,
-                    values: v
+            = "enum" _ i:ident() [' ']* ":" [' ']* t:type_ident() " "* m:metadata()? "{" __ v:enum_value() ** (__ "," __) __ ","? __ "}" {?
+                env.last_enum_value = 0;
+
+                match t {
+                    Type::Primitive(p) => Ok(Enum {
+                        name: i,
+                        ty: p,
+                        metadata: m,
+                        values: v
+                    }),
+                    _ => Err("invalid type")
                 }
             }
         rule union_value() -> UnionValue
@@ -110,12 +138,12 @@ peg::parser! {
         rule xdigit()
             = ['0'..='9' | 'a'..='f' | 'A'..='F']
 
-        rule ident() -> Ident
+        pub(crate) rule ident() -> Ident
             = v:$(['a'..='z' | 'A'..='Z' | '_']['a'..='z' | 'A'..='Z' | '0'..='9' | '_']*) { Ident(v.to_string()) }
 
-        rule integer() -> Integer
-            = x:$(['-' | '+']? digit()+) { Integer::Decimal(x.to_string()) }
-            / x:$(['-' | '+']?"0"['x' | 'X'] xdigit()+) { Integer::Hex(x.to_string()) }
+        rule integer() -> isize
+            = x:$(['-' | '+']? digit()+) {? x.parse::<isize>().map_err(|_| "invalid decimal integer") }
+            / x:$(['-' | '+']?"0"['x' | 'X'] xdigit()+) {? x.parse::<isize>().map_err(|_| "invalid hexadecimal integer") }
 
         rule float() -> Float
             = x:$(['-' | '+']? ("." digit()+ / digit()+ "." digit()* / digit()+) (['e'|'E']['-' | '+']? digit()+)?) { Float::Decimal(x.to_string()) }
@@ -177,8 +205,8 @@ peg::parser! {
         rule namespace() -> Namespace
             = "namespace" _ i:ident() ** "." __ semi_eol() { Namespace(i) }
 
-        rule root() -> Root
-            = "root_type" _ i:ident() __ semi_eol() { Root(i) }
+        rule root() -> RootType
+            = "root_type" _ i:ident() __ semi_eol() { RootType(i) }
 
         rule value() -> Value
             = s:string_literal() { Value::Single(SingleValue::String(s)) }
@@ -204,73 +232,144 @@ pub struct Attribute(String);
 pub struct FileExtension(String);
 
 #[derive(Debug, Clone)]
-pub struct FileIdentifier(String);
+pub struct FileIdentifier(pub [u8; 4]);
+
+impl<'a> TryFrom<&'a str> for FileIdentifier {
+    type Error = &'static str;
+
+    fn try_from(value: &'a str) -> Result<Self, Self::Error> {
+        let v: [u8; 4] = value
+            .as_bytes()
+            .try_into()
+            .map_err(|_| "file identifier must be 4 bytes")?;
+        Ok(FileIdentifier(v))
+    }
+}
 
 #[derive(Debug, Clone)]
 pub struct Enum {
-    name: Ident,
-    ty: Type,
-    metadata: Option<Metadata>,
-    values: Vec<EnumValue>,
+    pub name: Ident,
+    pub ty: Primitive,
+    pub metadata: Option<Metadata>,
+    pub values: Vec<EnumValue>,
+}
+
+impl Enum {
+    #[inline(always)]
+    pub fn table_field_size(&self) -> usize {
+        self.ty.table_field_size()
+    }
+
+    #[inline(always)]
+    pub fn value(&self, input: isize) -> Option<&EnumValue> {
+        self.values.iter().find(|x| x.value == input)
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct EnumValue {
-    name: Ident,
-    value: Option<Integer>,
+    pub name: Ident,
+    pub value: isize,
 }
 
 #[derive(Debug, Clone)]
 pub struct Union {
-    name: Ident,
-    metadata: Option<Metadata>,
-    values: Vec<UnionValue>,
+    pub name: Ident,
+    pub metadata: Option<Metadata>,
+    pub values: Vec<UnionValue>,
 }
 
 #[derive(Debug, Clone)]
 pub struct UnionValue {
-    name: Option<Ident>,
-    ty: Type,
+    pub name: Option<Ident>,
+    pub ty: Type,
+}
+
+impl Union {
+    #[inline(always)]
+    pub fn table_field_size(&self) -> usize {
+        // Byte for union tag plus the offset size
+        1 + IOFFSET_SIZE
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Field {
-    name: Ident,
-    ty: Type,
-    default_value: Option<Literal>,
-    metadata: Option<Metadata>,
+    pub name: Ident,
+    pub ty: Type,
+    pub default_value: Option<Literal>,
+    pub metadata: Option<Metadata>,
 }
 
 #[derive(Debug, Clone)]
-pub struct Metadata(IndexMap<Ident, Option<SingleValue>>);
+pub struct Metadata(pub IndexMap<Ident, Option<SingleValue>>);
 
 #[derive(Debug, Clone)]
 pub struct Struct {
-    name: Ident,
-    metadata: Option<Metadata>,
-    fields: Vec<Field>,
+    pub name: Ident,
+    pub metadata: Option<Metadata>,
+    pub fields: Vec<Field>,
+}
+
+impl Struct {
+    #[inline]
+    pub fn table_field_size(&self) -> usize {
+        self.fields
+            .iter()
+            .fold(0, |acc, cur| acc + cur.ty.table_field_size())
+    }
+
+    #[inline]
+    pub fn offset(&self, ident: &Ident) -> Option<(usize, &Field)> {
+        let mut offset = 0usize;
+
+        for field in self.fields.iter() {
+            let size = field.ty.table_field_size();
+
+            if &field.name == ident {
+                return Some((offset, field));
+            }
+
+            offset = offset.checked_add(size)?;
+        }
+
+        None
+    }
 }
 
 #[derive(Debug, Clone)]
 pub struct Table {
-    name: Ident,
-    metadata: Option<Metadata>,
-    fields: Vec<Field>,
+    pub name: Ident,
+    pub metadata: Option<Metadata>,
+    pub fields: Vec<Field>,
+}
+
+impl Table {
+    pub fn id(&self, ident: &Ident) -> Option<(usize, &Field)> {
+        let mut index = 0usize;
+
+        for field in self.fields.iter() {
+            if field.ty.is_union() {
+                // Handle the hidden tag field which gets its own id
+                index = index.checked_add(1)?;
+            }
+
+            // TODO: check metadata for id fields
+            if &field.name == ident {
+                return Some((index, field));
+            }
+
+            index = index.checked_add(1)?;
+        }
+
+        let index = self.fields.iter().position(|x| &x.name == ident)?;
+        Some((index, &self.fields[index]))
+    }
 }
 
 #[derive(Debug, Clone)]
-pub enum Type {
+pub enum Primitive {
     Bool,
-    Byte,
-    Ubyte,
-    Short,
-    Ushort,
-    Int,
-    Uint,
-    Float,
-    Long,
-    Ulong,
-    Double,
     Int8,
     Uint8,
     Int16,
@@ -281,13 +380,58 @@ pub enum Type {
     Uint64,
     Float32,
     Float64,
-    String,
-    Vector(Box<Type>),
-    Ident(Ident),
 }
 
 #[derive(Debug, Clone)]
-pub struct SchemaItems {
+pub enum Type {
+    String,
+    Primitive(Primitive),
+    FixedArray(Primitive, usize),
+    Vector(Box<Type>),
+    SchemaType(Box<SchemaType>),
+}
+
+const UOFFSET_SIZE: usize = 4;
+const IOFFSET_SIZE: usize = 4;
+
+impl Type {
+    #[inline]
+    pub fn table_field_size(&self) -> usize {
+        match self {
+            Type::Primitive(p) => p.table_field_size(),
+            Type::FixedArray(ty, count) => ty.table_field_size() * count,
+            Type::SchemaType(ty) => ty.table_field_size(),
+            Type::String | Type::Vector(_) => UOFFSET_SIZE,
+        }
+    }
+
+    #[inline(always)]
+    pub fn is_union(&self) -> bool {
+        if let Type::SchemaType(ty) = self {
+            match **ty {
+                SchemaType::Union(_) => true,
+                _ => false,
+            }
+        } else {
+            false
+        }
+    }
+}
+
+impl Primitive {
+    #[inline]
+    pub fn table_field_size(&self) -> usize {
+        match self {
+            Primitive::Bool | Primitive::Uint8 | Primitive::Int8 => 1,
+            Primitive::Int16 | Primitive::Uint16 => 2,
+            Primitive::Float32 | Primitive::Int32 | Primitive::Uint32 => 4,
+            Primitive::Float64 | Primitive::Int64 | Primitive::Uint64 => 8,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct SchemaItems {
     pub(crate) items: Vec<SchemaItem>,
 }
 
@@ -299,18 +443,39 @@ pub enum SchemaType {
     Enum(Enum),
 }
 
-#[derive(Debug, Clone, Default)]
-pub struct Schema {
-    includes: Vec<Include>,
-    namespace: Option<Namespace>,
-    attributes: Vec<Attribute>,
-    types: Vec<SchemaType>,
-    root_type: Option<Root>,
-    file_identifier: Option<FileIdentifier>,
-    file_extension: Option<FileExtension>,
+impl SchemaType {
+    #[inline]
+    pub fn table_field_size(&self) -> usize {
+        match self {
+            SchemaType::Table(_) => IOFFSET_SIZE,
+            SchemaType::Struct(struct_) => struct_.table_field_size(),
+            SchemaType::Union(union_) => union_.table_field_size(),
+            SchemaType::Enum(enum_) => enum_.table_field_size(),
+        }
+    }
 }
 
-use std::convert::TryFrom;
+impl SchemaType {
+    pub fn name(&self) -> &Ident {
+        match self {
+            SchemaType::Table(t) => &t.name,
+            SchemaType::Struct(t) => &t.name,
+            SchemaType::Union(t) => &t.name,
+            SchemaType::Enum(t) => &t.name,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct Schema {
+    pub includes: Vec<Include>,
+    pub namespace: Option<Namespace>,
+    pub attributes: Vec<Attribute>,
+    pub types: Vec<SchemaType>,
+    pub root_type: Option<RootType>,
+    pub file_identifier: Option<FileIdentifier>,
+    pub file_extension: Option<FileExtension>,
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
@@ -350,24 +515,15 @@ impl TryFrom<SchemaItems> for Schema {
                     }
                     schema.namespace = Some(ns);
                 }
-                SchemaItem::Table(table) => {
-                    schema.types.push(SchemaType::Table(table));
+                SchemaItem::SchemaType(ty) => {
+                    schema.types.push(ty);
                 }
-                SchemaItem::Struct(struct_) => {
-                    schema.types.push(SchemaType::Struct(struct_));
-                }
-                SchemaItem::Root(root) => {
+                SchemaItem::RootType(root) => {
                     if schema.root_type.is_some() {
                         return Err(Error::DuplicateRootType);
                     }
 
                     schema.root_type = Some(root);
-                }
-                SchemaItem::Union(union_) => {
-                    schema.types.push(SchemaType::Union(union_));
-                }
-                SchemaItem::Enum(enum_) => {
-                    schema.types.push(SchemaType::Enum(enum_));
                 }
                 SchemaItem::Attribute(attr) => {
                     schema.attributes.push(attr);
@@ -394,21 +550,18 @@ impl TryFrom<SchemaItems> for Schema {
 }
 
 #[derive(Debug, Clone)]
-pub enum SchemaItem {
+pub(crate) enum SchemaItem {
     Include(Include),
     Namespace(Namespace),
-    Table(Table),
-    Struct(Struct),
-    Root(Root),
-    Union(Union),
-    Enum(Enum),
+    SchemaType(SchemaType),
+    RootType(RootType),
     Attribute(Attribute),
     FileExtension(FileExtension),
     FileIdentifier(FileIdentifier),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub struct Ident(String);
+pub struct Ident(pub String);
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Value {
@@ -431,14 +584,8 @@ pub enum Literal {
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Scalar {
-    Integer(Integer),
+    Integer(isize),
     Float(Float),
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Hash)]
-pub enum Integer {
-    Decimal(String),
-    Hex(String),
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
@@ -449,14 +596,14 @@ pub enum Float {
 }
 
 #[derive(Debug, Clone)]
-pub struct Root(Ident);
+pub struct RootType(pub Ident);
 
 #[derive(Debug, Clone)]
-pub struct Namespace(Vec<Ident>);
+pub struct Namespace(pub Vec<Ident>);
 
 #[derive(Debug, Clone)]
 pub struct Include {
-    path: String,
+    pub path: String,
 }
 
 #[cfg(test)]
@@ -479,8 +626,13 @@ mod tests {
 }
 
 fn parse(s: &str) -> Result<Schema, Error> {
-    let out = fbs_parser::schema(s)?;
+    let out = fbs_parser::schema(s, &mut Env::default())?;
     Schema::try_from(out)
+}
+
+#[inline]
+pub fn ident(s: &str) -> Result<Ident, peg::error::ParseError<peg::str::LineCol>> {
+    fbs_parser::ident(s, &mut Env::default())
 }
 
 pub fn parse_path(base_path: &std::path::Path) -> Result<Vec<Schema>, Error> {
@@ -495,7 +647,7 @@ pub fn parse_path(base_path: &std::path::Path) -> Result<Vec<Schema>, Error> {
         .into_iter()
         .flatten()
         .collect();
-    
+
     schemas.push(schema);
     Ok(schemas)
 }

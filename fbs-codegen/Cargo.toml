@@ -6,4 +6,4 @@ edition = "2018"
 
 [dependencies]
 fbs-parser = { path = "../fbs-parser" }
-thiserror = "1.0.11"
+thiserror = "1.0.12"
