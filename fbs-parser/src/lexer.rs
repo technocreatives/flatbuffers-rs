@@ -2,14 +2,16 @@ use indexmap::IndexMap;
 
 peg::parser! {
     grammar fbs_parser() for str {
-        rule ___() = [' ' | '\n']+
-        rule __() = [' ' | '\n']*
+        rule ___() = ([' '] / nl())+
+        rule __() = ([' '] / nl())*
         rule _() = [' ']+
+
+        rule nl() = ("\r\n" / "\n")
 
         pub rule schema() -> SchemaItems
             = s:schema0()* { SchemaItems { items: s } }
         rule schema0() -> SchemaItem
-            = ([' ' | '\n'] / comment())* s:schema1() ([' ' | '\n'] / comment())* { s }
+            = (([' '] / nl()) / comment())* s:schema1() (([' '] / nl()) / comment())* { s }
         rule schema1() -> SchemaItem
             = i:include() { SchemaItem::Include(i) }
             / n:namespace() { SchemaItem::Namespace(n) }
@@ -22,7 +24,7 @@ peg::parser! {
             / a:attribute() { SchemaItem::Attribute(a) }
             // / r:rpc()
         rule comment() -> String
-            = "//" s:$((!['\n'][_])*) "\n" { s.trim().to_string() }
+            = "//" s:$((!nl()[_])*) nl() { s.trim().to_string() }
         rule attribute() -> Attribute
             = "attribute" _ s:string_literal() __ semi_eol() { Attribute(s) }
         rule file_extension() -> FileExtension
@@ -312,6 +314,9 @@ use std::convert::TryFrom;
 
 #[derive(Debug, thiserror::Error)]
 pub enum Error {
+    #[error("Include not found")]
+    IncludeNotFound(#[source] std::io::Error),
+
     #[error("Error parsing input")]
     FailedParsing(#[from] peg::error::ParseError<peg::str::LineCol>),
 
@@ -460,73 +465,37 @@ mod tests {
 
     #[test]
     fn smoke() {
-        let x = parse(
-            r#"
-include "ghostman.fbs";
-namespace Pahkat;
+        let x = parse_path(std::path::Path::new("tests/test.fbs"));
 
-union Package {
-    Descriptor,
-    Synthetic,
-    Redirect,
-}
-
-union Version {
-    Semantic,
-    Timestamp,
-    Unknown,
-}
-
-table Release {
-    version: string (key);
-}
-
-table Descriptor {
-    id: string (key); // Reference to parent.package_keys
-    name_keys: [string]; // Reference to parent.known_languages
-    name_values: [string];
-    description_keys: [string]; // Reference to parent.known_languages
-    description_values: [string];
-    tags: [string]; // Reference to parent.known_tags
-    release: [Release];
-}
-
-table Synthetic {
-
-}
-
-table Packages {
-    packages_keys: [string];
-    packages_values: [Package];
-    known_tags: [string];
-    known_languages: [string];
-}
-
-root_type Packages;
-"#,
-        );
-
-        println!("{:#?}", x.unwrap());
+        println!("{:#?}", x);
     }
 
     #[test]
     fn smoke2() {
-        let x = parse(
-            r#"table PointPosition { x:uint; y:uint; }
-table MarkerPosition {}
-union Position {
-Start  :  MarkerPosition  ,
-Point : PointPosition ,
-Finish :MarkerPosition ,  
-Angery: bool,
-}"#,
-        );
+        let x = parse_path(std::path::Path::new("tests/test2.fbs"));
 
-        println!("{:#?}", x.unwrap());
+        println!("{:#?}", x);
     }
 }
 
-pub fn parse(s: &str) -> Result<Schema, Error> {
+fn parse(s: &str) -> Result<Schema, Error> {
     let out = fbs_parser::schema(s)?;
     Schema::try_from(out)
+}
+
+pub fn parse_path(base_path: &std::path::Path) -> Result<Vec<Schema>, Error> {
+    let s = std::fs::read_to_string(&base_path).map_err(Error::IncludeNotFound)?;
+    let schema = parse(&s)?;
+
+    let mut schemas: Vec<Schema> = schema
+        .includes
+        .iter()
+        .map(|x| dbg!(parse_path(&base_path.parent().unwrap().join(&x.path))))
+        .collect::<Result<Vec<Vec<Schema>>, Error>>()?
+        .into_iter()
+        .flatten()
+        .collect();
+    
+    schemas.push(schema);
+    Ok(schemas)
 }

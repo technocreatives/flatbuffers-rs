@@ -1,0 +1,41 @@
+include "test.fbs";
+namespace Pahkat;
+
+union Package {
+    Descriptor,
+    Synthetic,
+    Redirect,
+}
+
+union Version {
+    Semantic,
+    Timestamp,
+    Unknown,
+}
+
+table Release {
+    version: string (key);
+}
+
+table Descriptor {
+    id: string (key); // Reference to parent.package_keys
+    name_keys: [string]; // Reference to parent.known_languages
+    name_values: [string];
+    description_keys: [string]; // Reference to parent.known_languages
+    description_values: [string];
+    tags: [string]; // Reference to parent.known_tags
+    release: [Release];
+}
+
+table Synthetic {
+
+}
+
+table Packages {
+    packages_keys: [string];
+    packages_values: [Package];
+    known_tags: [string];
+    known_languages: [string];
+}
+
+root_type Packages;
