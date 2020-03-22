@@ -7,7 +7,7 @@ pub struct Generator {
 }
 
 #[derive(Debug, thiserror::Error)]
-enum GenerateError {
+pub enum GenerateError {
     
 }
 
