@@ -94,6 +94,8 @@ struct VTable<'a> {
 
 impl<'a> VTable<'a> {
     pub(crate) fn new(offset: uoffset, buf: &'a [u8]) -> Result<VTable<'a>, ValueError> {
+        log::trace!("new vtable: offset {:?}, buf: {:?}", offset, &buf);
+
         const MIN_VTABLE_LEN: u32 = std::mem::size_of::<u16>() as u32;
 
         if (offset + MIN_VTABLE_LEN) as usize >= buf.len() {
@@ -106,9 +108,10 @@ impl<'a> VTable<'a> {
         let a = offset as usize;
         let b = (offset + MIN_VTABLE_LEN) as usize;
         let vtable_len = u16::from_le_bytes(buf[a..b].try_into().unwrap());
+        log::trace!("vtable len: {}", vtable_len);
 
         Ok(VTable {
-            buf: &buf[a..vtable_len as usize],
+            buf: &buf[a..a+vtable_len as usize],
             len: vtable_len,
         })
     }
@@ -129,10 +132,13 @@ impl<'a> VTable<'a> {
 
     #[inline(always)]
     pub fn table_offset(&self, id: usize) -> Option<voffset> {
+        log::trace!("table offset: id {}", id);
+
         const ID_START_OFFSET: usize = 4;
         const TWO_BYTES: usize = 2;
 
         let id_offset = id * TWO_BYTES + ID_START_OFFSET;
+        log::trace!("id_offset: {}", id_offset);
         let id_offset = match u16::try_from(id_offset) {
             Ok(v) => v as usize,
             Err(_) => return None,
@@ -174,8 +180,9 @@ impl<'a> Struct<'a> {
         buf: &'a [u8],
     ) -> Result<Struct<'a>, ValueError> {
         let end = offset as usize + schema_struct.table_field_size();
+        let buf = &buf[offset as usize..end];
         Ok(Struct {
-            buf: &buf[offset as usize..end],
+            buf,
             schema: schema_struct,
         })
     }
@@ -264,51 +271,58 @@ impl<'a> Table<'a> {
     pub(crate) fn new(
         offset: uoffset,
         schema_table: &'a fbs_parser::Table,
-        buf: &'a [u8],
+        data: &'a [u8],
     ) -> Result<Table<'a>, ValueError> {
+        log::trace!("new table: offset {:?}, schema: {:?}", &offset, &schema_table.name);
         const MIN_TABLE_LEN: u32 = std::mem::size_of::<uoffset>() as u32;
 
-        if (offset + MIN_TABLE_LEN) as usize >= buf.len() {
+        if (offset + MIN_TABLE_LEN) as usize >= data.len() {
             return Err(ValueError::BufferOverflow {
-                length: buf.len(),
+                length: data.len(),
                 offset: offset as u32,
             });
         }
 
         let a = offset as usize;
         let b = (offset + MIN_TABLE_LEN) as usize;
+        log::trace!("Offset range: {}..{}", a, b);
 
-        let vtable_ioffset = ioffset::from_le_bytes(buf[a..b].try_into().unwrap());
+        let vtable_ioffset = ioffset::from_le_bytes(data[a..b].try_into().unwrap());
         let vtable_offset = (offset as ioffset - vtable_ioffset) as uoffset;
-        let vtable = VTable::new(vtable_offset, buf)?;
+        let vtable = VTable::new(vtable_offset, data)?;
 
-        println!("{:?}", vtable);
+        log::trace!("{:?}", vtable);
 
         let table_end = offset as usize + vtable.table_len() as usize;
 
-        if table_end >= buf.len() {
+        if table_end >= data.len() {
             return Err(ValueError::BufferOverflow {
-                length: buf.len(),
+                length: data.len(),
                 offset: offset as u32,
             });
         }
 
+        let buf = &data[offset as usize..table_end];
+
+        log::trace!("table: {}..{} {:?}", offset, table_end, buf);
+
         Ok(Table {
-            data: buf,
+            data,
             offset,
-            buf: &buf[offset as usize..table_end],
+            buf,
             vtable,
             schema: schema_table,
         })
     }
 
     #[inline(always)]
-    fn offset(&self, offset: uoffset) -> Option<ioffset> {
-        assert!(offset != 0);
+    fn vtable_offset(&self, vtable_offset: voffset) -> Option<ioffset> {
+        assert!(vtable_offset != 0);
 
-        let offset = offset as usize;
+        const FOUR_BYTES: usize = 0;
+        let offset = vtable_offset as usize + FOUR_BYTES;
 
-        let s = self.data[offset..offset + std::mem::size_of::<ioffset>()]
+        let s = self.buf[offset..offset + std::mem::size_of::<ioffset>()]
             .try_into()
             .unwrap();
         let v = ioffset::from_le_bytes(s);
@@ -319,25 +333,45 @@ impl<'a> Table<'a> {
         }
     }
 
-    fn vector(&self, offset: uoffset, ty: &'a fbs_parser::Type) -> Option<Vector<'a>> {
-        let offset = match self.offset(offset) {
+    #[inline(always)]
+    fn dereference_voffset(&self, vtable_offset: voffset) -> Option<usize> {
+        let offset = match self.vtable_offset(vtable_offset) {
             Some(v) => v,
             None => return None,
         };
-        let offset = (self.offset as ioffset - offset) as usize;
+        log::trace!("offset from voffset: {}", offset);
+        let offset = self.offset as usize + vtable_offset as usize + offset as usize;
+        log::trace!("absolute offset: {}", offset);
+        Some(offset)
+    }
+
+    #[inline(always)]
+    fn vector(&self, offset: voffset, ty: &'a fbs_parser::Type) -> Option<Vector<'a>> {
+        let offset = self.dereference_voffset(offset).expect("invalid dereference");
         let size_end = offset + std::mem::size_of::<uoffset>();
+        
+        log::trace!("range {}..{}", offset, size_end);
         let len = u32::from_le_bytes(self.data[offset..size_end].try_into().unwrap()) as usize;
         let slice = &self.data[size_end..size_end + len];
         Some(Vector::new(slice, ty))
     }
 
     pub fn get(&self, ident: &fbs_parser::Ident) -> Result<Option<Value>, ValueError> {
+        log::trace!("table get: {:?}", ident);
+
         let (id, schema_field) = self
             .schema
             .id(ident)
             .ok_or_else(|| ValueError::KeyNotFound(ident.clone()))?;
-        let table_field_offset = match self.vtable.table_offset(id) {
-            Some(v) => v as uoffset,
+
+        log::trace!("id: {:?}, field: {:?}, ty: {:?}", id, &schema_field.name, &schema_field.ty);
+
+        let table_field_offset = self.vtable.table_offset(id);
+
+        log::trace!("table field offset: {:?}", table_field_offset);
+        
+        let table_field_offset = match table_field_offset {
+            Some(v) => v,// as uoffset,
             None => return Ok(None),
         };
 
@@ -347,10 +381,14 @@ impl<'a> Table<'a> {
             Type::Vector(ty) if ty.is_union() => {
                 let union_ty = ty.as_union().unwrap();
 
-                let union_tag_offset = match self.vtable.table_offset(id - 1) {
-                    Some(v) => (self.offset as ioffset - v as ioffset) as uoffset,
+                log::trace!("union_ty: {:?}", &union_ty);
+
+                let union_tag_offset = match self.vtable.table_offset(id.checked_sub(1).expect("id must not be negative")) {
+                    Some(v) => v,
                     None => return Ok(None),
                 };
+
+                log::trace!("union_tag_offset: {:?}", &union_tag_offset);
 
                 let union_tag_vector = self.vector(
                     union_tag_offset,
@@ -370,14 +408,13 @@ impl<'a> Table<'a> {
             }
             Type::Vector(ty) => Value::Vector(self.vector(table_field_offset, &ty)),
             Type::String => {
-                let offset = match self.offset(table_field_offset) {
-                    Some(v) => v,
-                    None => return Ok(Some(Value::String(None))),
-                };
-                let offset = ((self.offset as ioffset) - offset) as usize;
-                let size_end = offset + std::mem::size_of::<uoffset>();
+                let offset = self.dereference_voffset(table_field_offset).expect("invalid dereference");
+
+                let size_end = offset as usize + std::mem::size_of::<uoffset>();
+                log::trace!("size_end {}", size_end);
                 let len =
                     u32::from_le_bytes(self.data[offset..size_end].try_into().unwrap()) as usize;
+                log::trace!("len {}", len);
                 let slice = &self.data[size_end..size_end + len];
                 let s = std::str::from_utf8(slice)?;
 
@@ -387,7 +424,7 @@ impl<'a> Table<'a> {
             Type::FixedArray(_, _) => todo!(),
             Type::SchemaType(ty) => match &**ty {
                 SchemaType::Table(ty) => {
-                    let table = match self.offset(table_field_offset) {
+                    let table = match self.vtable_offset(table_field_offset) {
                         Some(relative_offset) => {
                             let offset = (self.offset as ioffset + relative_offset) as uoffset;
                             Some(Table::new(offset, &ty, self.data)?)
@@ -397,7 +434,7 @@ impl<'a> Table<'a> {
                     Value::Table(table)
                 }
                 SchemaType::Struct(ty) => {
-                    let struct_ = match self.offset(table_field_offset) {
+                    let struct_ = match self.vtable_offset(table_field_offset) {
                         Some(offset) => Some(Struct::new(offset, &ty, self.data)?),
                         None => None,
                     };
@@ -421,7 +458,7 @@ impl<'a> Table<'a> {
                     let value = match &union_value.ty {
                         Type::SchemaType(ty) => match &**ty {
                             SchemaType::Table(ty) => {
-                                let table = match self.offset(table_field_offset) {
+                                let table = match self.vtable_offset(table_field_offset) {
                                     Some(relative_offset) => {
                                         let offset =
                                             (self.offset as ioffset - relative_offset) as uoffset;
@@ -507,6 +544,24 @@ pub enum Value<'a> {
     U64(u64),
 }
 
+impl<'a> Value<'a> {
+    #[inline(always)]
+    pub fn try_into_table(self) -> Option<Table<'a>> {
+        match self {
+            Value::Table(t) => t,
+            _ => None,
+        }
+    }
+
+    #[inline(always)]
+    pub fn try_into_union_vector(self) -> Option<UnionVector<'a>> {
+        match self {
+            Value::UnionVector(t) => t,
+            _ => None,
+        }
+    }
+}
+
 #[derive(Debug, thiserror::Error)]
 pub enum TryFromValueError {
     #[error("Could not parse value to integer")]
@@ -568,18 +623,18 @@ impl<'s, 'b> Parser<'s, 'b> {
     }
 
     pub fn parse(&self) -> Result<Value, ParseError> {
+        log::trace!("data: {:?}", &self.buf);
+
         let (root_offset, root_type) = self.read_root_offset()?;
-        println!("root offset: {:?}, type: {:?}", &root_offset, &root_type);
+        log::trace!("root offset: {:?}, type: {:?}", &root_offset, &root_type.name());
 
         let file_identifier = self.read_file_identifier()?;
-        println!("file identifier: {:?}", &file_identifier);
+        log::trace!("file identifier: {:?}", &file_identifier);
 
         let schema_table = match root_type {
             SchemaType::Table(table) => table,
             t => return Err(ParseError::CannotHandleRootType(t.clone())),
         };
-
-        println!("schema table: {:?}", &schema_table);
 
         let root_table = Table::new(root_offset, &schema_table, &*self.buf).unwrap();
 

@@ -1,5 +1,6 @@
 use indexmap::IndexMap;
 use std::convert::{TryFrom, TryInto};
+use std::path::Path;
 
 #[derive(Debug, Default)]
 pub(crate) struct Env {
@@ -74,16 +75,16 @@ peg::parser! {
 
         rule type_ident() -> Type
             = "bool" { Type::Primitive(Primitive::Bool) }
-            / ("byte" / "int8") { Type::Primitive(Primitive::Int8) }
-            / ("ubyte" / "uint8") { Type::Primitive(Primitive::Uint8) }
-            / ("short" / "int16") { Type::Primitive(Primitive::Int16) }
-            / ("ushort" / "uint16") { Type::Primitive(Primitive::Uint16) }
-            / ("int" / "int32") { Type::Primitive(Primitive::Int32) }
-            / ("uint" / "uint32") { Type::Primitive(Primitive::Uint32) }
-            / ("long" / "int64") { Type::Primitive(Primitive::Int64) }
-            / ("ulong"/ "uint64") { Type::Primitive(Primitive::Uint64) }
-            / ("float" / "float32") { Type::Primitive(Primitive::Float32) }
-            / ("double" / "float64") { Type::Primitive(Primitive::Float64) }
+            / ("int8" / "byte") { Type::Primitive(Primitive::Int8) }
+            / ("uint8" / "ubyte") { Type::Primitive(Primitive::Uint8) }
+            / ("int16" / "short") { Type::Primitive(Primitive::Int16) }
+            / ("uint16" / "ushort") { Type::Primitive(Primitive::Uint16) }
+            / ("int32" / "int") { Type::Primitive(Primitive::Int32) }
+            / ("uint32" / "uint") { Type::Primitive(Primitive::Uint32) }
+            / ("int64" / "long") { Type::Primitive(Primitive::Int64) }
+            / ("uint64" / "ulong") { Type::Primitive(Primitive::Uint64) }
+            / ("float32" / "float") { Type::Primitive(Primitive::Float32) }
+            / ("float64" / "double") { Type::Primitive(Primitive::Float64) }
             / "string" { Type::String }
             / "[" i:type_ident() "]" { Type::Vector(Box::new(i)) }
             / i:type_ident0() { i }
@@ -412,13 +413,19 @@ impl Type {
 
     #[inline(always)]
     pub fn as_union(&self) -> Option<&Union> {
-        if let Type::SchemaType(ty) = self {
-            match &**ty {
+        match self {
+            Type::Vector(b) => match &**b {
+                Type::SchemaType(ty) => match &**ty {
+                    SchemaType::Union(v) => Some(v),
+                    _ => None,
+                }
+                _ => None,
+            }
+            Type::SchemaType(ty) => match &**ty {
                 SchemaType::Union(v) => Some(v),
                 _ => None,
             }
-        } else {
-            None
+            _ => None,
         }
     }
 }
@@ -640,14 +647,18 @@ pub fn ident(s: &str) -> Result<Ident, peg::error::ParseError<peg::str::LineCol>
     fbs_parser::ident(s, &mut Env::default())
 }
 
-pub fn parse_path(base_path: &std::path::Path) -> Result<Vec<Schema>, Error> {
+pub fn parse_path<P: AsRef<Path>>(base_path: P) -> Result<Vec<Schema>, Error> {
     let s = std::fs::read_to_string(&base_path).map_err(Error::IncludeNotFound)?;
     let schema = parse(&s)?;
 
     let mut schemas: Vec<Schema> = schema
         .includes
         .iter()
-        .map(|x| dbg!(parse_path(&base_path.parent().unwrap().join(&x.path))))
+        .map(|x| {
+            dbg!(parse_path(
+                &base_path.as_ref().parent().unwrap().join(&x.path)
+            ))
+        })
         .collect::<Result<Vec<Vec<Schema>>, Error>>()?
         .into_iter()
         .flatten()
