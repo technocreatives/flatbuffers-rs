@@ -34,7 +34,7 @@ pub enum SchemaError {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum WalkError {
+pub enum ParseError {
     #[error("Schema error")]
     Schema(#[from] SchemaError),
 
@@ -77,7 +77,7 @@ impl SchemaExt for Schema {
 }
 
 #[derive(Debug, thiserror::Error)]
-pub enum WalkerInitError {
+pub enum ParseerInitError {
     #[error("Buffer too large: offset type size {offset_size}, buffer length {len}, maximum length: {max_len}")]
     BufferTooLarge {
         offset_size: usize,
@@ -550,11 +550,11 @@ impl<'s, 'b> Parser<'s, 'b> {
     pub fn new<S: Into<Cow<'s, Schema>>, B: Into<Cow<'b, [u8]>>>(
         schema: S,
         buf: B,
-    ) -> Result<Parser<'s, 'b>, WalkerInitError> {
+    ) -> Result<Parser<'s, 'b>, ParseerInitError> {
         let buf = buf.into();
         let schema = schema.into();
 
-        let buf_len = i32::try_from(buf.len()).map_err(|_| WalkerInitError::BufferTooLarge {
+        let buf_len = i32::try_from(buf.len()).map_err(|_| ParseerInitError::BufferTooLarge {
             offset_size: std::mem::size_of::<ioffset>(),
             len: buf.len(),
             max_len: ioffset::max_value() as usize,
@@ -567,7 +567,7 @@ impl<'s, 'b> Parser<'s, 'b> {
         })
     }
 
-    pub fn walk(&self) -> Result<Value, WalkError> {
+    pub fn parse(&self) -> Result<Value, ParseError> {
         let (root_offset, root_type) = self.read_root_offset()?;
         println!("root offset: {:?}, type: {:?}", &root_offset, &root_type);
 
@@ -576,43 +576,39 @@ impl<'s, 'b> Parser<'s, 'b> {
 
         let schema_table = match root_type {
             SchemaType::Table(table) => table,
-            t => return Err(WalkError::CannotHandleRootType(t.clone())),
+            t => return Err(ParseError::CannotHandleRootType(t.clone())),
         };
 
         println!("schema table: {:?}", &schema_table);
 
         let root_table = Table::new(root_offset, &schema_table, &*self.buf).unwrap();
 
-        // let i = ident("foo").unwrap();
-
-        // let value = root_table.get(&i).unwrap().unwrap();
-
         Ok(Value::Table(Some(root_table)))
     }
 
-    fn read_root_offset(&self) -> Result<(uoffset, &SchemaType), WalkError> {
+    fn read_root_offset(&self) -> Result<(uoffset, &SchemaType), ParseError> {
         if self.buf.len() < 4 {
-            return Err(WalkError::DataTooShort(self.buf.len()));
+            return Err(ParseError::DataTooShort(self.buf.len()));
         }
         let root_type = self.schema.root_type()?;
         let s = &self.buf[0..4];
         Ok((uoffset::from_le_bytes(s.try_into().unwrap()), root_type))
     }
 
-    fn read_file_identifier(&self) -> Result<Option<[u8; 4]>, WalkError> {
+    fn read_file_identifier(&self) -> Result<Option<[u8; 4]>, ParseError> {
         let expected = match self.schema.file_identifier.as_ref() {
             None => return Ok(None),
             Some(v) => v.0,
         };
 
         if self.buf.len() < 8 {
-            return Err(WalkError::DataTooShort(self.buf.len()));
+            return Err(ParseError::DataTooShort(self.buf.len()));
         }
 
         let found = self.buf[4..8].try_into().unwrap();
 
         if found != expected {
-            return Err(WalkError::InvalidFileIdentifier { expected, found });
+            return Err(ParseError::InvalidFileIdentifier { expected, found });
         }
 
         Ok(Some(found))
