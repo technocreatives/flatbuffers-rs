@@ -247,7 +247,7 @@ impl<'a> TryFrom<&'a str> for FileIdentifier {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Enum {
     pub name: Ident,
     pub ty: Primitive,
@@ -267,20 +267,20 @@ impl Enum {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct EnumValue {
     pub name: Ident,
     pub value: isize,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Union {
     pub name: Ident,
     pub metadata: Option<Metadata>,
     pub values: Vec<UnionValue>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct UnionValue {
     pub name: Option<Ident>,
     pub ty: Type,
@@ -294,7 +294,7 @@ impl Union {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Field {
     pub name: Ident,
     pub ty: Type,
@@ -302,10 +302,18 @@ pub struct Field {
     pub metadata: Option<Metadata>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Metadata(pub IndexMap<Ident, Option<SingleValue>>);
 
-#[derive(Debug, Clone)]
+use std::hash::{Hash, Hasher};
+
+impl Hash for Metadata {
+    fn hash<H: Hasher>(&self, state: &mut H) {
+        (self as *const Metadata).hash(state);
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Struct {
     pub name: Ident,
     pub metadata: Option<Metadata>,
@@ -338,37 +346,65 @@ impl Struct {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub struct Table {
     pub name: Ident,
     pub metadata: Option<Metadata>,
     pub fields: Vec<Field>,
 }
 
-impl Table {
-    pub fn id(&self, ident: &Ident) -> Option<(usize, &Field)> {
-        let mut index = 0usize;
+pub struct Ids<'a> {
+    iter: std::slice::Iter<'a, Field>,
+    index: u16,
+}
 
-        for field in self.fields.iter() {
-            if field.ty.is_union() {
-                // Handle the hidden tag field which gets its own id
-                index = index.checked_add(1)?;
-            }
+impl<'a> Iterator for Ids<'a> {
+    type Item = (u16, &'a Field);
 
-            // TODO: check metadata for id fields
-            if &field.name == ident {
-                return Some((index, field));
-            }
+    fn next(&mut self) -> Option<Self::Item> {
+        let field = self.iter.next()?;
+        let mut index = self.index;
+        self.index = index.checked_add(1)?;
 
+        if field.ty.is_union() {
+            // Handle the hidden tag field which gets its own id
             index = index.checked_add(1)?;
+            self.index = self.index.checked_add(1)?;
         }
-
-        let index = self.fields.iter().position(|x| &x.name == ident)?;
-        Some((index, &self.fields[index]))
+        
+        Some((index, field))
     }
 }
 
-#[derive(Debug, Clone)]
+impl Table {
+    pub fn ids(&self) -> Ids<'_> {
+        Ids { iter: self.fields.iter(), index: 0 }
+    }
+
+    pub fn id(&self, ident: &Ident) -> Option<(usize, &Field)> {
+        // let mut index = 0usize;
+
+        // for field in self.fields.iter() {
+        //     if field.ty.is_union() {
+        //         // Handle the hidden tag field which gets its own id
+        //         index = index.checked_add(1)?;
+        //     }
+
+        //     // TODO: check metadata for id fields
+        //     if &field.name == ident {
+        //         return Some((index, field));
+        //     }
+
+        //     index = index.checked_add(1)?;
+        // }
+
+        // let index = self.fields.iter().position(|x| &x.name == ident)?;
+        // Some((index, &self.fields[index]))
+        self.ids().find(|(_, field)| &field.name == ident)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Primitive {
     Bool,
     Int8,
@@ -383,7 +419,7 @@ pub enum Primitive {
     Float64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum Type {
     String,
     Primitive(Primitive),
@@ -418,13 +454,13 @@ impl Type {
                 Type::SchemaType(ty) => match &**ty {
                     SchemaType::Union(v) => Some(v),
                     _ => None,
-                }
+                },
                 _ => None,
-            }
+            },
             Type::SchemaType(ty) => match &**ty {
                 SchemaType::Union(v) => Some(v),
                 _ => None,
-            }
+            },
             _ => None,
         }
     }
@@ -447,12 +483,24 @@ pub(crate) struct SchemaItems {
     pub(crate) items: Vec<SchemaItem>,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub enum SchemaType {
     Table(Table),
     Struct(Struct),
     Union(Union),
     Enum(Enum),
+}
+
+macro_rules! impl_schema_type_to {
+    ($name:ident, $ty:ident) => {
+        #[inline]
+        pub fn $name(&self) -> Option<&$ty> {
+            match self {
+                SchemaType::$ty(v) => Some(v),
+                _ => None
+            }
+        }
+    }
 }
 
 impl SchemaType {
@@ -465,6 +513,11 @@ impl SchemaType {
             SchemaType::Enum(enum_) => enum_.table_field_size(),
         }
     }
+
+    impl_schema_type_to!(to_table, Table);
+    impl_schema_type_to!(to_struct, Struct);
+    impl_schema_type_to!(to_union, Union);
+    impl_schema_type_to!(to_enum, Enum);
 }
 
 impl SchemaType {
@@ -487,6 +540,14 @@ pub struct Schema {
     pub root_type: Option<RootType>,
     pub file_identifier: Option<FileIdentifier>,
     pub file_extension: Option<FileExtension>,
+}
+
+impl Schema {
+    #[inline]
+    pub fn root_type(&self) -> Option<&SchemaType> {
+        let ident = &self.root_type.as_ref()?.0;
+        self.types.iter().find(|x| x.name() == ident)
+    }
 }
 
 #[derive(Debug, thiserror::Error)]

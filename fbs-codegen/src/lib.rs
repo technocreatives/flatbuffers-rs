@@ -1,3 +1,4 @@
+pub mod builder;
 mod types;
 
 use std::borrow::Cow;
@@ -58,12 +59,12 @@ pub struct Parser<'s, 'b> {
 }
 
 trait SchemaExt {
-    fn root_type(&self) -> Result<&SchemaType, SchemaError>;
+    fn root_type_checked(&self) -> Result<&SchemaType, SchemaError>;
 }
 
 impl SchemaExt for Schema {
     #[inline]
-    fn root_type(&self) -> Result<&SchemaType, SchemaError> {
+    fn root_type_checked(&self) -> Result<&SchemaType, SchemaError> {
         let ident = &self
             .root_type
             .as_ref()
@@ -111,7 +112,7 @@ impl<'a> VTable<'a> {
         log::trace!("vtable len: {}", vtable_len);
 
         Ok(VTable {
-            buf: &buf[a..a+vtable_len as usize],
+            buf: &buf[a..a + vtable_len as usize],
             len: vtable_len,
         })
     }
@@ -273,7 +274,11 @@ impl<'a> Table<'a> {
         schema_table: &'a fbs_parser::Table,
         data: &'a [u8],
     ) -> Result<Table<'a>, ValueError> {
-        log::trace!("new table: offset {:?}, schema: {:?}", &offset, &schema_table.name);
+        log::trace!(
+            "new table: offset {:?}, schema: {:?}",
+            &offset,
+            &schema_table.name
+        );
         const MIN_TABLE_LEN: u32 = std::mem::size_of::<uoffset>() as u32;
 
         if (offset + MIN_TABLE_LEN) as usize >= data.len() {
@@ -347,9 +352,11 @@ impl<'a> Table<'a> {
 
     #[inline(always)]
     fn vector(&self, offset: voffset, ty: &'a fbs_parser::Type) -> Option<Vector<'a>> {
-        let offset = self.dereference_voffset(offset).expect("invalid dereference");
+        let offset = self
+            .dereference_voffset(offset)
+            .expect("invalid dereference");
         let size_end = offset + std::mem::size_of::<uoffset>();
-        
+
         log::trace!("range {}..{}", offset, size_end);
         let len = u32::from_le_bytes(self.data[offset..size_end].try_into().unwrap()) as usize;
         let slice = &self.data[size_end..size_end + len];
@@ -364,14 +371,19 @@ impl<'a> Table<'a> {
             .id(ident)
             .ok_or_else(|| ValueError::KeyNotFound(ident.clone()))?;
 
-        log::trace!("id: {:?}, field: {:?}, ty: {:?}", id, &schema_field.name, &schema_field.ty);
+        log::trace!(
+            "id: {:?}, field: {:?}, ty: {:?}",
+            id,
+            &schema_field.name,
+            &schema_field.ty
+        );
 
         let table_field_offset = self.vtable.table_offset(id);
 
         log::trace!("table field offset: {:?}", table_field_offset);
-        
+
         let table_field_offset = match table_field_offset {
-            Some(v) => v,// as uoffset,
+            Some(v) => v, // as uoffset,
             None => return Ok(None),
         };
 
@@ -383,7 +395,10 @@ impl<'a> Table<'a> {
 
                 log::trace!("union_ty: {:?}", &union_ty);
 
-                let union_tag_offset = match self.vtable.table_offset(id.checked_sub(1).expect("id must not be negative")) {
+                let union_tag_offset = match self
+                    .vtable
+                    .table_offset(id.checked_sub(1).expect("id must not be negative"))
+                {
                     Some(v) => v,
                     None => return Ok(None),
                 };
@@ -408,7 +423,9 @@ impl<'a> Table<'a> {
             }
             Type::Vector(ty) => Value::Vector(self.vector(table_field_offset, &ty)),
             Type::String => {
-                let offset = self.dereference_voffset(table_field_offset).expect("invalid dereference");
+                let offset = self
+                    .dereference_voffset(table_field_offset)
+                    .expect("invalid dereference");
 
                 let size_end = offset as usize + std::mem::size_of::<uoffset>();
                 log::trace!("size_end {}", size_end);
@@ -626,7 +643,11 @@ impl<'s, 'b> Parser<'s, 'b> {
         log::trace!("data: {:?}", &self.buf);
 
         let (root_offset, root_type) = self.read_root_offset()?;
-        log::trace!("root offset: {:?}, type: {:?}", &root_offset, &root_type.name());
+        log::trace!(
+            "root offset: {:?}, type: {:?}",
+            &root_offset,
+            &root_type.name()
+        );
 
         let file_identifier = self.read_file_identifier()?;
         log::trace!("file identifier: {:?}", &file_identifier);
@@ -645,7 +666,7 @@ impl<'s, 'b> Parser<'s, 'b> {
         if self.buf.len() < 4 {
             return Err(ParseError::DataTooShort(self.buf.len()));
         }
-        let root_type = self.schema.root_type()?;
+        let root_type = self.schema.root_type_checked()?;
         let s = &self.buf[0..4];
         Ok((uoffset::from_le_bytes(s.try_into().unwrap()), root_type))
     }
