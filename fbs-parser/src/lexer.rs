@@ -400,7 +400,9 @@ impl Table {
 
         // let index = self.fields.iter().position(|x| &x.name == ident)?;
         // Some((index, &self.fields[index]))
-        self.ids().find(|(_, field)| &field.name == ident)
+        self.ids()
+            .find(|(_, field)| &field.name == ident)
+            .map(|(id, field)| (id as usize, field))
     }
 }
 
