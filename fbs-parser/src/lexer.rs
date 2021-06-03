@@ -371,14 +371,17 @@ impl<'a> Iterator for Ids<'a> {
             index = index.checked_add(1)?;
             self.index = self.index.checked_add(1)?;
         }
-        
+
         Some((index, field))
     }
 }
 
 impl Table {
     pub fn ids(&self) -> Ids<'_> {
-        Ids { iter: self.fields.iter(), index: 0 }
+        Ids {
+            iter: self.fields.iter(),
+            index: 0,
+        }
     }
 
     pub fn id(&self, ident: &Ident) -> Option<(usize, &Field)> {
@@ -499,10 +502,10 @@ macro_rules! impl_schema_type_to {
         pub fn $name(&self) -> Option<&$ty> {
             match self {
                 SchemaType::$ty(v) => Some(v),
-                _ => None
+                _ => None,
             }
         }
-    }
+    };
 }
 
 impl SchemaType {
