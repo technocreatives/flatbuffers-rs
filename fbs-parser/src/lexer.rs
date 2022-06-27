@@ -184,7 +184,7 @@ peg::parser! {
             = [' ']* ":" [' ']* s:single_value() { s }
 
         rule field() -> Field
-            = i:ident() [' ']* ":" [' ']* t:type_ident() l:field0()? m:field1()? semi_eol() __ {
+            = (comment() __)? i:ident() [' ']* ":" [' ']* t:type_ident() l:field0()? m:field1()? semi_eol() __ {
                 Field {
                     name: i,
                     ty: t,
